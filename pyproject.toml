@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_backend"
+
+[project]
+name = "pki-for-skills"
+version = "0.1.0"
+description = "Public Key Infrastructure for Agent Skills - Cryptographic verification and trust management"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+dependencies = [
+    "cryptography>=41.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+
+[project.scripts]
+pki-skills = "pki_skills.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
