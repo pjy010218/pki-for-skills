@@ -1,0 +1,17 @@
+{
+  "manifest_version": "1.0",
+  "skill": {
+    "name": "mock-skill",
+    "version": "1.0.0",
+    "description": "",
+    "sha256": "3c1fe9ec0701d62a8f0e919471f7ecb11653f0195952d19fac02fe8192586f9f",
+    "checksum": {},
+    "dependencies": []
+  },
+  "author": {
+    "pubkey": "ed25519:5fVoYLwbtsJrkiNmUq7dFViyc7aVGR3nmTAWxE5NsLk=",
+    "identity_proof": ""
+  },
+  "timestamp": "2026-06-28T17:39:53.638685+00:00",
+  "signature": "8oPgmGnCIbq+Q8qRqiD0bbFnAVmkNtbYLT7hUsyNeg0sseIjXdtQ4ndEVM5X4n1Nex8alJRtKzuHnYyhBPccAg=="
+}

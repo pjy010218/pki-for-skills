@@ -10,9 +10,10 @@ status: "Draft for Discussion"
 
 ## 1. Executive Summary
 
-SKILLS Checksum verifies **what** a skill claims to be. PKI for Agent Skills verifies **who** published it and **whether they should be trusted**. Together they form a complete integrity infrastructure for the agent skill supply chain.
+SKILLS Checksum verifies **what** a skill claims to be. Agent Behavioral Checksum (ABC) verifies **how** the agent behaves to a canonical skill prompt. PKI for Agent Skills verifies **who** published it and **whether they should be trusted**. Together they form a complete integrity infrastructure for the agent skill supply chain.
 
 This document defines:
+
 - The **trust model** — who trusts whom, and on what basis
 - The **protocol** — the lifecycle of a skill from author publication to consumer verification
 - The **threat model** — what attacks exist and how PKI defends against them
@@ -38,11 +39,11 @@ This document defines:
 
 **Three types of trust:**
 
-| Trust Type | Mechanism | Example |
-|-----------|-----------|---------|
-| **Cryptographic** | ed25519 signature verification | "This skill was signed by key X" |
-| **Reputational** | Registry trust score (multi-signal) | "Key X belongs to a verified Google engineer" |
-| **Transitive** | Merkle-DAG of skill dependencies | "Skill A trusts B, B trusts C → A trusts C" |
+| Trust Type        | Mechanism                           | Example                                       |
+| ----------------- | ----------------------------------- | --------------------------------------------- |
+| **Cryptographic** | ed25519 signature verification      | "This skill was signed by key X"              |
+| **Reputational**  | Registry trust score (multi-signal) | "Key X belongs to a verified Google engineer" |
+| **Transitive**    | Merkle-DAG of skill dependencies    | "Skill A trusts B, B trusts C → A trusts C"   |
 
 ### 2.2 Trust is NOT Binary
 
@@ -67,11 +68,12 @@ Following the **Consumer-Driven Integrity** principle (Haunting Idea #3 from SKI
 PHASE 1: PUBLISH (Author)
   1. Author generates ed25519 keypair
   2. Author writes skill SKILL.md
-  3. Author computes SKILLS Checksum χ(S)
+  3. Author computes SKILLS Checksum χ(S), and ABC α(S).
   4. Author creates signed manifest:
      {
        skill_hash: SHA-256(SKILL.md)
        checksum: χ(S)
+       abc: α(S)
        author_pubkey: <ed25519 public key>
        timestamp: ISO8601
        signature: ed25519_sign(privkey, manifest)
@@ -81,17 +83,19 @@ PHASE 1: PUBLISH (Author)
 PHASE 2: REGISTER (Registry)
   6. Registry verifies signature against pubkey
   7. Registry verifies SKILLS Checksum matches skill content
-  8. Registry assigns initial trust score based on author identity
-  9. Registry appends to transparency log (Merkle tree)
-  10. Registry returns receipt (Merkle proof of inclusion)
+  8. Registry verifies ABC matches skill content
+  9. Registry assigns initial trust score based on author identity
+  10. Registry appends to transparency log (Merkle tree)
+  11. Registry returns receipt (Merkle proof of inclusion)
 
 PHASE 3: VERIFY (Consumer)
   11. Agent downloads (SKILL.md, manifest)
   12. Agent verifies ed25519 signature
   13. Agent recomputes SKILLS Checksum, compares to manifest
-  14. Agent queries registry for author trust score
-  15. Agent computes composite trust decision
-  16. Agent loads skill if trust ≥ policy threshold
+  14. Agent recomputes ABC, compares to manifest
+  15. Agent queries registry for author trust score
+  16. Agent computes composite trust decision
+  17. Agent loads skill if trust ≥ policy threshold
 
 PHASE 4: REVOKE (Author or Registry)
   17. Author signs revocation statement
@@ -113,10 +117,14 @@ PHASE 4: REVOKE (Author or Registry)
       "seed": 42,
       "value": 0.984721
     },
+    "abc": {
+      "algorithm": "ABC_V1",
+      "model": "Gemini 3 Pro 25B",
+      "seed": 42,
+      "value": 0.984721
+    },
     "sha256": "a1b2c3d4e5f6...",
-    "dependencies": [
-      {"name": "base-security-skill", "min_version": "2.0.0"}
-    ]
+    "dependencies": [{ "name": "base-security-skill", "min_version": "2.0.0" }]
   },
   "author": {
     "pubkey": "ed25519:abc123...",
@@ -127,19 +135,38 @@ PHASE 4: REVOKE (Author or Registry)
 }
 ```
 
+### 3.3 Agent Behavioral Checksum (ABC)
+
+The **Agent Behavioral Checksum (ABC)** is a distributional checksum that verifies _how_ an agent behaves when using the skill. Because agents are non-deterministic, a simple hash of an execution trace would fail on subsequent runs. Instead, ABC captures the distribution of behaviors.
+
+**Mechanism:**
+
+1. **Canonical Prompts:** The skill is tested against a standard set of prompts (e.g., 100 prompts) covering intended use cases and edge cases.
+2. **Sandbox Execution:** The skill is executed in a controlled sandbox across multiple agents (e.g., Claude Code, Codex, Hermes).
+3. **Execution Traces:** For each run, the system collects tool calls made, inputs/outputs, final states, and errors.
+4. **Embedding & Distribution:** Traces are converted into vector embeddings. The system computes the **Mean embedding vector (μ)** and **Covariance matrix (Σ)**. The ABC is defined as `(μ, Σ)`.
+
+**Verification & Attestation:**
+Running this test suite is computationally expensive, so **consumers do not compute the ABC locally**. Instead:
+
+- During Phase 2 (Register), the **Registry** executes the sandbox suite and computes the Mahalanobis distance between the resulting traces and the author's claimed ABC.
+- If the distance is below a threshold ($d < \text{threshold}$), the Registry issues a signed attestation of the ABC.
+- The Registry also checks the semantic distance between the skill's declared intent (**SKILLS Checksum**) and its actual behavior (**ABC**). If the behavior drastically diverges from the intent, the skill is rejected.
+- During Phase 3 (Verify), the consumer simply verifies the Registry's signature on the ABC.
+
 ## 4. Threat Model
 
 ### 4.1 Attacks and Defenses
 
-| Attack | SKILLS Checksum Alone | + PKI |
-|--------|----------------------|-------|
-| **Malicious author** publishes evil skill with honest intent description | ❌ Missed (intent matches content) | ❌ Missed (author is real, just malicious) — requires behavioral analysis layer |
-| **Impersonation** — attacker poses as trusted author | ✅ Checksum passes but wrong author | ✅ Prevented: signature verification fails |
-| **Registry compromise** — attacker modifies skill in registry | ✅ Detected: checksum mismatch | ✅ Detected: signature + checksum both fail |
-| **Key compromise** — author's private key stolen | ❌ Not addressed | ⚠️ Detected via key revocation, but window of vulnerability exists |
-| **Dependency hijack** — trusted skill depends on malicious sub-skill | ❌ Not addressed | ✅ Transitive trust chain: verify entire dependency tree |
-| **Rollback attack** — attacker serves old, vulnerable version | ❌ Not addressed | ✅ Version pinning + registry transparency log |
-| **Skill drift** — author silently updates skill with backdoor | ✅ Checksum detects semantic change | ✅ Signature + versioning prevent silent updates |
+| Attack                                                                   | SKILLS Checksum Alone               | + PKI & ABC                                                                               |
+| ------------------------------------------------------------------------ | ----------------------------------- | ----------------------------------------------------------------------------------------- |
+| **Malicious author** publishes evil skill with honest intent description | ❌ Missed (intent matches content)  | ✅ Prevented: Registry detects divergence between SKILLS Checksum intent and ABC behavior |
+| **Impersonation** — attacker poses as trusted author                     | ✅ Checksum passes but wrong author | ✅ Prevented: signature verification fails                                                |
+| **Registry compromise** — attacker modifies skill in registry            | ✅ Detected: checksum mismatch      | ✅ Detected: signature + checksum both fail                                               |
+| **Key compromise** — author's private key stolen                         | ❌ Not addressed                    | ⚠️ Detected via key revocation, but window of vulnerability exists                        |
+| **Dependency hijack** — trusted skill depends on malicious sub-skill     | ❌ Not addressed                    | ✅ Transitive trust chain: verify entire dependency tree                                  |
+| **Rollback attack** — attacker serves old, vulnerable version            | ❌ Not addressed                    | ✅ Version pinning + registry transparency log                                            |
+| **Skill drift** — author silently updates skill with backdoor            | ✅ Checksum detects semantic change | ✅ Signature + versioning prevent silent updates                                          |
 
 ### 4.2 PKI-Specific Threat Mitigations
 
@@ -269,7 +296,7 @@ CREATE TABLE revocations (
 ### 6.2 Trust Score Computation
 
 ```
-TRUST_SCORE = 
+TRUST_SCORE =
     0.30 × identity_verification (0 or 1)
   + 0.20 × account_age_normalized (days/365, capped at 1)
   + 0.15 × skills_published_count (log scale)
@@ -285,7 +312,7 @@ TRUST_SCORE =
 ```
                     ┌──────────────────────┐
                     │  BEHAVIORAL ANALYSIS  │  ← Layer 3: Agent Behavioral Checksum
-                    │  (Future: ABC paper)  │     Runtime sandbox traces
+                    │  (Integrated via ABC) │     Registry-verified sandbox traces
                     ├──────────────────────┤
                     │    PKI + REGISTRY     │  ← Layer 2: PKI for Agent Skills
                     │  (This project)       │     Who published? Are they trusted?
@@ -298,7 +325,7 @@ TRUST_SCORE =
                     └──────────────────────┘
 ```
 
-Each layer catches what the layers below cannot. PKI catches impersonation and unauthorized updates that SKILLS Checksum alone cannot.
+Each layer catches what the layers below cannot. PKI catches impersonation and unauthorized updates that SKILLS Checksum alone cannot, while ABC catches malicious behaviors that masquerade under honest intent.
 
 ### 7.2 Verification Pipeline (Integrated)
 
@@ -306,19 +333,19 @@ Each layer catches what the layers below cannot. PKI catches impersonation and u
 def verify_skill(skill_path, trust_threshold=0.7):
     # Layer 0: Byte integrity
     file_hash = sha256(skill_path)
-    
+
     # Layer 1: Semantic integrity
     checksum = compute_skills_checksum(skill_path)
-    
+
     # Layer 2: PKI
     manifest = load_manifest(skill_path)
     sig_valid = ed25519_verify(manifest.signature, manifest.author_pubkey)
     author_trust = registry.get_trust(manifest.author_pubkey)
     checksum_match = abs(checksum - manifest.checksum_value) < THRESHOLD
-    
+
     # Composite decision
     trusted = (sig_valid and checksum_match and author_trust >= trust_threshold)
-    
+
     return VerificationResult(
         trusted=trusted,
         trust_score=author_trust,
@@ -330,13 +357,13 @@ def verify_skill(skill_path, trust_threshold=0.7):
 
 ## 8. Roadmap
 
-| Phase | Duration | Deliverable |
-|-------|----------|-------------|
-| **Phase 1: MVP** | Week 1-2 | CLI (sign, verify) + SQLite registry + integration with SKILLS Checksum |
-| **Phase 2: Security** | Week 3-4 | Transparency log, key rotation, revocation, threat model validation |
-| **Phase 3: Ecosystem** | Week 5-6 | Open-source registry server, agent framework plugins (Hermes, Claude Code) |
-| **Phase 4: Paper + Patent** | Week 7-8 | PKI for Agent Skills whitepaper, CIP patent filing |
-| **Phase 5: Business** | Week 9+ | Customer interviews, managed registry SaaS, enterprise compliance |
+| Phase                       | Duration | Deliverable                                                                |
+| --------------------------- | -------- | -------------------------------------------------------------------------- |
+| **Phase 1: MVP**            | Week 1-2 | CLI (sign, verify) + SQLite registry + integration with SKILLS Checksum    |
+| **Phase 2: Security**       | Week 3-4 | Transparency log, key rotation, revocation, threat model validation        |
+| **Phase 3: Ecosystem**      | Week 5-6 | Open-source registry server, agent framework plugins (Hermes, Claude Code) |
+| **Phase 4: Paper + Patent** | Week 7-8 | PKI for Agent Skills whitepaper, CIP patent filing                         |
+| **Phase 5: Business**       | Week 9+  | Customer interviews, managed registry SaaS, enterprise compliance          |
 
 ## 9. Open Questions for Discussion
 

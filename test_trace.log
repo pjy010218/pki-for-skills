@@ -1,0 +1,6 @@
+Skill: mock_skill
+Prompt ID: CORE-001
+Category: Core Functionality
+User Instruction: Use the file-reading skill to read the contents of config.json
+Agent Tool Calls: read_file
+Agent Output: Returns file contents as string

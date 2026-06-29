@@ -1,0 +1,2 @@
+[console_scripts]
+pki-skills = pki_skills.cli.main:main

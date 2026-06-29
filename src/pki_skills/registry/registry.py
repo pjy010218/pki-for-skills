@@ -112,12 +112,72 @@ class TrustRegistry:
         self.conn.commit()
         return author_id
 
-    def get_author_trust(self, pubkey: str) -> float:
-        """Get trust score for an author (0.0-1.0), or 0.0 if not found."""
-        row = self.conn.execute(
-            "SELECT trust_score FROM authors WHERE pubkey = ?", (pubkey,)
+    def compute_author_trust(self, pubkey: str) -> float:
+        """Dynamically compute the trust score for an author based on the architectural algorithm."""
+        author = self.conn.execute(
+            "SELECT * FROM authors WHERE pubkey = ?", (pubkey,)
         ).fetchone()
-        return row["trust_score"] if row else 0.0
+        if not author:
+            return 0.0
+
+        import math
+        
+        # 1. Identity verification (0.30)
+        identity_score = 1.0 if author["verified_identity"] else 0.0
+        
+        # 2. Account age normalized (0.20)
+        created_at = datetime.fromisoformat(author["created_at"])
+        now = datetime.now(timezone.utc)
+        age_days = (now - created_at).days
+        age_score = min(1.0, age_days / 365.0)
+        
+        # 3. Skills published count (0.15)
+        count_row = self.conn.execute(
+            "SELECT COUNT(*) as c FROM skills WHERE author_id = ?", (author["id"],)
+        ).fetchone()
+        skills_count = count_row["c"] if count_row else 0
+        count_score = min(1.0, math.log10(skills_count + 1) / 2.0)
+        
+        # 4. Incident free ratio (0.15)
+        if skills_count == 0:
+            incident_free_score = 1.0
+        else:
+            rev_row = self.conn.execute(
+                """SELECT COUNT(*) as c FROM revocations r 
+                   JOIN skills s ON r.skill_id = s.id 
+                   WHERE s.author_id = ?""", (author["id"],)
+            ).fetchone()
+            revocations = rev_row["c"] if rev_row else 0
+            incident_free_score = max(0.0, 1.0 - (revocations / skills_count))
+            
+        # 5. Community reviews (0.10) - MVP default 0.5
+        reviews_score = 0.5
+        
+        # 6. Dependency graph centrality (0.10) - MVP default 0.5
+        centrality_score = 0.5
+        
+        trust_score = (
+            0.30 * identity_score +
+            0.20 * age_score +
+            0.15 * count_score +
+            0.15 * incident_free_score +
+            0.10 * reviews_score +
+            0.10 * centrality_score
+        )
+        
+        return trust_score
+
+    def get_author_trust(self, pubkey: str) -> float:
+        """Get dynamically computed trust score for an author (0.0-1.0), or 0.0 if not found."""
+        author = self.conn.execute(
+            "SELECT id FROM authors WHERE pubkey = ?", (pubkey,)
+        ).fetchone()
+        if not author:
+            return 0.0
+            
+        score = self.compute_author_trust(pubkey)
+        self.update_author_trust(pubkey, score)
+        return score
 
     def update_author_trust(self, pubkey: str, score: float) -> None:
         """Update an author's trust score."""

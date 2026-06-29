@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "pki-for-skills"
@@ -11,6 +11,8 @@ license = {text = "MIT"}
 requires-python = ">=3.10"
 dependencies = [
     "cryptography>=41.0.0",
+    "numpy>=1.24.0",
+    "scipy>=1.10.0",
 ]
 
 [project.optional-dependencies]
@@ -20,7 +22,7 @@ dev = [
 ]
 
 [project.scripts]
-pki-skills = "pki_skills.cli:main"
+pki-skills = "pki_skills.cli.main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

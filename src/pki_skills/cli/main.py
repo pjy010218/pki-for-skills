@@ -14,14 +14,14 @@ import argparse
 import sys
 from pathlib import Path
 
-from .crypto import generate_keypair, load_private_key, load_public_key, save_keypair
-from .manifest import (
+from ..core.crypto import generate_keypair, load_private_key, load_public_key, save_keypair
+from ..core.manifest import (
     Manifest,
     create_manifest,
     verify_manifest,
     verify_manifest_file,
 )
-from .registry import TrustRegistry
+from ..registry import TrustRegistry
 
 
 def cmd_keygen(args: argparse.Namespace) -> int:
@@ -77,6 +77,44 @@ def cmd_sign(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_publish(args: argparse.Namespace) -> int:
+    """Publish a signed skill manifest to the registry."""
+    manifest_path = Path(args.manifest)
+    if not manifest_path.exists():
+        print(f"Manifest not found: {manifest_path}")
+        return 1
+
+    pubkey_pem = args.public_key
+    if Path(pubkey_pem).exists():
+        pubkey_pem = Path(pubkey_pem).read_text()
+
+    # 1. Verify signature
+    is_valid, manifest = verify_manifest_file(manifest_path, pubkey_pem)
+    if not is_valid:
+        print("Signature INVALID — manifest cannot be published")
+        return 1
+
+    # 2. Publish to registry
+    registry = TrustRegistry(args.db)
+    registry.init()
+    
+    skill_id = registry.publish_skill(
+        name=manifest.skill.name,
+        author_pubkey=manifest.author.get("pubkey", ""),
+        version=manifest.skill.version,
+        sha256=manifest.skill.sha256,
+        checksum_value=manifest.skill.checksum.get("value") if manifest.skill.checksum else None,
+        checksum_model=manifest.skill.checksum.get("model", "") if manifest.skill.checksum else "",
+        manifest_json=manifest.to_json(),
+        dependencies=manifest.skill.dependencies,
+    )
+    registry.close()
+
+    print(f"Successfully published {manifest.skill.name} v{manifest.skill.version}")
+    print(f"   Skill ID: {skill_id}")
+    return 0
+
+
 def cmd_verify(args: argparse.Namespace) -> int:
     """Verify a skill manifest."""
     manifest_path = Path(args.manifest)
@@ -117,6 +155,120 @@ def cmd_verify(args: argparse.Namespace) -> int:
         registry.close()
 
     return 0
+
+
+def cmd_audit(args: argparse.Namespace) -> int:
+    """Audit a skill manifest against the transparency log."""
+    manifest_path = Path(args.manifest)
+    if not manifest_path.exists():
+        print(f"Manifest not found: {manifest_path}")
+        return 1
+
+    pubkey_pem = args.public_key
+    if Path(pubkey_pem).exists():
+        pubkey_pem = Path(pubkey_pem).read_text()
+
+    is_valid, manifest = verify_manifest_file(manifest_path, pubkey_pem)
+    if not is_valid:
+        print("Signature INVALID — cannot audit")
+        return 1
+
+    registry = TrustRegistry(args.db)
+    registry.init()
+    
+    skill = registry.get_skill(manifest.skill.name, manifest.skill.version)
+    if not skill:
+        print(f"Skill {manifest.skill.name} v{manifest.skill.version} not found in registry.")
+        registry.close()
+        return 1
+
+    rows = registry.conn.execute(
+        "SELECT * FROM transparency_log WHERE skill_id = ? AND operation = 'publish' ORDER BY sequence ASC",
+        (skill["id"],)
+    ).fetchall()
+
+    if not rows:
+        print(f"No transparency log entry found for skill ID {skill['id']}")
+        registry.close()
+        return 1
+
+    first_entry = rows[0]
+    print(f"Transparency Verification SUCCESS")
+    print(f"   Skill:       {manifest.skill.name} v{manifest.skill.version}")
+    print(f"   Skill ID:    {skill['id']}")
+    print(f"   Log Seq:     {first_entry['sequence']}")
+    print(f"   Merkle Root: {first_entry['merkle_root']}")
+    print(f"   Timestamp:   {first_entry['timestamp']}")
+    registry.close()
+    return 0
+
+
+def cmd_abc(args: argparse.Namespace) -> int:
+    """Evaluate skill behavioral integrity (ABC)."""
+    from ..abc.sandbox import SandboxSimulator
+    from ..abc.embedding import SentenceTransformerProvider
+    from ..abc.checksum import compute_distributional_checksum, verify_abc_distance
+    import json
+    import numpy as np
+    
+    if args.abc_action == "compute":
+        print(f"Loading embedding model 'all-MiniLM-L6-v2' (this may take a moment)...")
+        embedder = SentenceTransformerProvider()
+        
+        print("Running Sandbox Simulator...")
+        simulator = SandboxSimulator()
+        skill_name = Path(args.skill).stem if args.skill else "unknown_skill"
+        traces = simulator.execute_skill(skill_name)
+        
+        print(f"Generated {len(traces)} execution traces.")
+        print("Computing embeddings...")
+        embeddings = [embedder.embed_trace(t) for t in traces]
+        
+        print("Computing ABC (Mean, Covariance)...")
+        mu, sigma = compute_distributional_checksum(embeddings)
+        
+        abc_data = {
+            "skill": skill_name,
+            "mu": mu.tolist(),
+            "sigma": sigma.tolist(),
+        }
+        out_path = Path(args.skill).parent / f"{skill_name}.abc.json" if args.skill else Path(f"{skill_name}.abc.json")
+        with open(out_path, "w") as f:
+            json.dump(abc_data, f)
+            
+        print(f"ABC Checksum computed and saved to {out_path}")
+        return 0
+
+    elif args.abc_action == "verify":
+        abc_path = Path(args.abc_file)
+        if not abc_path.exists():
+            print(f"ABC file not found: {abc_path}")
+            return 1
+            
+        with open(abc_path, "r") as f:
+            abc_data = json.load(f)
+            
+        mu = np.array(abc_data["mu"])
+        sigma = np.array(abc_data["sigma"])
+        
+        trace_text = Path(args.trace_file).read_text(encoding="utf-8")
+        print(f"Loading embedding model...")
+        embedder = SentenceTransformerProvider()
+        
+        trace_emb = embedder.embed_trace(trace_text)
+        
+        is_valid, dist = verify_abc_distance(trace_emb, mu, sigma, threshold=args.threshold)
+        print(f"Mahalanobis Distance: {dist:.4f} (Threshold: {args.threshold})")
+        
+        if is_valid:
+            print("BEHAVIORAL INTEGRITY VERIFIED (PASS)")
+            return 0
+        else:
+            print("BEHAVIORAL INTEGRITY VIOLATION DETECTED (FAIL)")
+            return 1
+    else:
+        print(f"Unknown abc action: {args.abc_action}")
+        return 1
 
 
 def cmd_registry(args: argparse.Namespace) -> int:
@@ -190,6 +342,14 @@ def main() -> int:
                         help="Model used for checksum")
     p_sign.add_argument("-o", "--output", help="Output path for manifest")
 
+    # publish
+    p_publish = subparsers.add_parser("publish", help="Publish a signed manifest to the registry")
+    p_publish.add_argument("manifest", help="Path to .manifest.json file")
+    p_publish.add_argument("-p", "--public-key", required=True,
+                           help="Author's public key (PEM file or string)")
+    p_publish.add_argument("-d", "--db", default="pki-registry.db",
+                           help="Registry database path")
+
     # verify
     p_verify = subparsers.add_parser("verify", help="Verify a skill manifest")
     p_verify.add_argument("manifest", help="Path to .manifest.json file")
@@ -197,6 +357,22 @@ def main() -> int:
                           help="Author's public key (PEM file or string)")
     p_verify.add_argument("-d", "--db", default="pki-registry.db",
                           help="Registry database path (for trust lookup)")
+
+    # audit
+    p_audit = subparsers.add_parser("audit", help="Audit a skill against the transparency log")
+    p_audit.add_argument("manifest", help="Path to .manifest.json file")
+    p_audit.add_argument("-p", "--public-key", required=True,
+                         help="Author's public key (PEM file or string)")
+    p_audit.add_argument("-d", "--db", default="pki-registry.db",
+                         help="Registry database path")
+
+    # abc
+    p_abc = subparsers.add_parser("abc", help="Evaluate skill behavioral integrity (ABC)")
+    p_abc.add_argument("abc_action", choices=["compute", "verify"], help="Action to perform")
+    p_abc.add_argument("--skill", help="Path to SKILL.md (for compute)")
+    p_abc.add_argument("--abc-file", help="Path to .abc.json file (for verify)")
+    p_abc.add_argument("--trace-file", help="Path to execution trace file (for verify)")
+    p_abc.add_argument("-t", "--threshold", type=float, default=3.0, help="Mahalanobis distance threshold")
 
     # registry
     p_reg = subparsers.add_parser("registry", help="Manage the trust registry")
@@ -215,8 +391,14 @@ def main() -> int:
         return cmd_keygen(args)
     elif args.command == "sign":
         return cmd_sign(args)
+    elif args.command == "publish":
+        return cmd_publish(args)
     elif args.command == "verify":
         return cmd_verify(args)
+    elif args.command == "audit":
+        return cmd_audit(args)
+    elif args.command == "abc":
+        return cmd_abc(args)
     elif args.command == "registry":
         return cmd_registry(args)
     else:
