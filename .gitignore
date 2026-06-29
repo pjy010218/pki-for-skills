@@ -1,0 +1,13 @@
+# directories or general files
+/docs
+/.agents
+.venv
+.env
+__pycache__
+*.pyc
+*.pyo
+
+# specific files
+README.manifest.json
+test_trace.log
+test-registry.db
