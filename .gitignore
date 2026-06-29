@@ -1,5 +1,4 @@
 # directories or general files
-/docs
 /.agents
 .venv
 .env

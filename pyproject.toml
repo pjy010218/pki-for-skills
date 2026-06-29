@@ -20,6 +20,10 @@ dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
 ]
+ml = [
+    "torch>=2.0.0",
+    "sentence-transformers>=2.2.2",
+]
 
 [project.scripts]
 pki-skills = "pki_skills.cli.main:main"
